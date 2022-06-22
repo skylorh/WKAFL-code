@@ -283,7 +283,7 @@ class celeba(Dataset):
         targets = self.targets[idx]
         return data, targets
 
-def dataset_federate_noniid(dataset, workers,Ratio = [1, 1, 1], net='NOT CNN' ):
+def dataset_federate_noniid(dataset, workers, Ratio = [1, 1, 1], net='NOT CNN' ):
     """
     Add a method to easily transform a torch.Dataset or a sy.BaseDataset
     into a sy.FederatedDataset. The dataset given is split in len(workers)

@@ -150,9 +150,10 @@ def dataset_federate_noniid(dataset, workers, args, net='NOT CNN' ):
 
     datasDivide = []
     labelsDivide = []
+    # trainDataSize 和 testDataSize会有问题，labels并不是只有0-9
     for i in range(10):
         index = (labels==i)
-        datasDivide.append(datas[index,:,:])
+        datasDivide.append(datas[index, :, :])
         labelsDivide.append(labels[index])
     datasets = []
     datasTotalNum = []
@@ -160,19 +161,33 @@ def dataset_federate_noniid(dataset, workers, args, net='NOT CNN' ):
     for i in range(args.user_num):
         user_data = []
         user_label = []
+        # 随机选取几类数据 tensor([2, 9])
         labelClass = torch.randperm(10)[0:labelClassNum]
+
+        # 每类数据随机分配一定百分比例 tensor([0.8884, 0.9903]) -> tensor([0.4729, 0.5271])
         dataRate = torch.rand([labelClassNum])
         dataRate = dataRate/torch.sum(dataRate)
+
+        # 10 ~ 50间的随机数 tensor(16) -> tensor([8., 8.])
         dataNum = torch.randperm(40)[0]+10
         dataNum = torch.round(dataNum*dataRate)
+
         if labelClassNum>1:
+            # tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
             datasnum = torch.zeros([10])
+            # tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
             datasnum[labelClass.tolist()] = dataNum
             datasTotalNum.append(datasnum)
+
             for j in range(labelClassNum):
+                # 8
                 datanum = int(dataNum[j].item())
+                # 选取6000内的datanum个数据 tensor([5408, 5448, 5158, 2964, 1971,  166,  825, 4224])
+                # 有bug，当某一类别数据不到6000时可能会有IndexError
                 index = torch.randperm(6000)[0:datanum]
+                # 选取labelClass[j]类别中对应的数据
                 user_data.append(datasDivide[labelClass[j]][index,:,:])
+                # tensor([2., 2., 2., 2., 2., 2., 2., 2.])
                 user_label.append(labelClass[j]*torch.ones(datanum))
             user_data = torch.cat(user_data, 0)
             user_label = torch.cat(user_label, 0)

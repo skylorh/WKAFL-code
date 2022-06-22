@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import logging
+import copy
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,11 @@ def decode_idx3_ubyte(img_file, datasize):
         img = struct.unpack_from(fmt_image, buf_img, offset)
         img_list.append(np.reshape(img, (28, 28)))
         offset += struct.calcsize(fmt_image)
-    return torch.tensor(img_list)
+    print('len', len(img_list))
+    rtn = torch.tensor(img_list)
+    print('rtn initialized')
+
+    return rtn
 
 def decode_idx1_ubyte(label_file, datasize):
     """
@@ -92,15 +97,19 @@ def loadWriters(writers_file, datasize):
     return torch.tensor(writers)
 
 def loadDatesets(trainDataSize, testDataSize, dataType='byclass'):
+    print('func loadDatesets...')
     train_images_file = r'../data/EMNIST-ByClass/' + dataType + '/emnist-' + dataType + '-train-images-idx3-ubyte'
     train_labels_file = r'../data/EMNIST-ByClass/' + dataType + '/emnist-' + dataType + '-train-labels-idx1-ubyte'
-    train_writers_file = '../data/EMNIST-ByClass/byclass\emnist-byclass-train-writers.txt'
+    train_writers_file = '../data/EMNIST-ByClass/byclass/emnist-byclass-train-writers.txt'
     test_images_file = r'../data/EMNIST-ByClass/' + dataType + '/emnist-' + dataType + '-test-images-idx3-ubyte'
     test_labels_file = r'../data/EMNIST-ByClass/' + dataType + '/emnist-' + dataType + '-test-labels-idx1-ubyte'
     test_writers_file = '../data/EMNIST-ByClass/byclass/emnist-byclass-test-writers.txt'
 
+    print('train_images...')
     train_images = decode_idx3_ubyte(train_images_file, trainDataSize)
+    print('train_labels...')
     train_labels = decode_idx1_ubyte(train_labels_file, trainDataSize)
+    print('train_writers...')
     train_writers = loadWriters(train_writers_file, trainDataSize)
     test_images = decode_idx3_ubyte(test_images_file, testDataSize)
     test_labels = decode_idx1_ubyte(test_labels_file, testDataSize)
@@ -136,11 +145,13 @@ def testImages(datasets, selectWriter, P=5000):
         index = (writers==writer)
         test_images.append(images[index])
         test_labels.append(labels[index])
+    print(len(test_images))
 
     test_data = {'test_images': torch.cat(test_images,0), 'test_labels': torch.cat(test_labels,0)}
     return testDataLoader(test_data)
 
 def dataset_federate_noniid(dataset, workers, args, net='NOT CNN' ):
+    print('func dataset_federate_noniid...')
     """
     Add a method to easily transform a torch.Dataset or a sy.BaseDataset
     into a sy.FederatedDataset. The dataset given is split in len(workers)
@@ -153,23 +164,35 @@ def dataset_federate_noniid(dataset, workers, args, net='NOT CNN' ):
     datasNum = torch.zeros([args.user_num])
     datasets = []
     selectWriter = []
+    print(writers)
 
-    for i in range(torch.max(writers)):
+    print('torch.max(writers) + 1: ', torch.max(writers) + 1)
+
+    # writers的分布决定了workers间数据的分布
+    for i in range(torch.max(writers) + 1):
+        # 每个writers只选择一部分
+        # 类似[True, False, False, True, False]
         index = (writers == i)
+        # print('torch.sum(index): ', torch.sum(index))
+        # True的数量大于batch_size才分配数据到worker
+        # print(i, ' sum: ' ,torch.sum(index))
+
         if torch.sum(index) >= args.batch_size:
             selectWriter.append(i)
             datasNum[len(selectWriter)-1] = torch.sum(index)
+            # 给每个worker发送大于batch_size的数据
             data = datas[index]
             label = labels[index]
 
             worker = workers[len(selectWriter)-1]
             logger.debug("Sending data to worker %s", worker.id)
+
             data = data.send(worker)
             label = label.send(worker)
             datasets.append(sy.BaseDataset(data, label))  # .send(worker)
 
         if len(selectWriter) >= args.user_num:
-            break;
+            break
 
     logger.debug("Done!")
     return sy.FederatedDataset(datasets), datasNum, selectWriter

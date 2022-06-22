@@ -21,13 +21,13 @@ class testDataLoader():
         data = self.data[idx]
         label = self.labels[idx]
         return data, label
-def testLoader(testset):
+def testLoader(testset, data_size):
     datas = testset.data
-    data = [torch.unsqueeze(1.*torch.tensor(datas[i].transpose()),0) for i in range(10000)]
+    data = [torch.unsqueeze(1.*torch.tensor(datas[i].transpose()),0) for i in range(data_size)]
     data = torch.cat(data, 0)
     return testDataLoader(data, testset.targets)
 
-def dataset_federate_noniid(trainset, workers, transform, classNum):
+def dataset_federate_noniid(trainset, workers, transform, classNum, data_size):
     """
     Add a method to easily transform a torch.Dataset or a sy.BaseDataset
     into a sy.FederatedDataset. The dataset given is split in len(workers)
@@ -40,7 +40,7 @@ def dataset_federate_noniid(trainset, workers, transform, classNum):
     dataset = {}
 
     data_new = []
-    for i in range(50000):
+    for i in range(data_size):
         data_new.append(torch.unsqueeze(1.*torch.tensor(datas[i].transpose()),0))
     datas = torch.cat(data_new,0)
 
