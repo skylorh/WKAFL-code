@@ -169,7 +169,7 @@ def dataset_federate_noniid(dataset, workers, args, net='NOT CNN' ):
         dataRate = dataRate/torch.sum(dataRate)
 
         # 10 ~ 50间的随机数 tensor(16) -> tensor([8., 8.])
-        dataNum = torch.randperm(40)[0]+10
+        dataNum = torch.randperm(2000)[0]+1000
         dataNum = torch.round(dataNum*dataRate)
 
         if labelClassNum>1:

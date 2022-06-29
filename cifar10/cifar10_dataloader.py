@@ -58,7 +58,7 @@ def dataset_federate_noniid(trainset, workers, transform, classNum, data_size):
         labelClass = torch.randperm(10)[0:classNum]
         dataRate = torch.rand([classNum])
         dataRate = dataRate / torch.sum(dataRate)
-        dataNum = torch.randperm(40)[0] + 10
+        dataNum = torch.randperm(1000)[0] + 1000
         dataNum = torch.round(dataNum * dataRate)
         if classNum>1:
             datasnum = torch.zeros([10])
