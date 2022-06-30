@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import syft as sy
 import torch
@@ -18,8 +20,8 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 class Argument():
     def __init__(self):
         self.user_num = 10  # number of total clients P
-        self.K = 1  # number of participant clients K
-        self.lr = 0.0005  # learning rate of global model
+        self.K = 3  # number of participant clients K
+        self.lr = 0.00001  # learning rate of global model
         self.batch_size = 4  # batch size of each client for local training
         self.itr_test = 50  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
@@ -128,16 +130,12 @@ def test(model, test_loader, device):
 def train(learning_rate, train_model, train_data, train_target, device, optimizer, gradient=True):
     train_model.train()
     train_model.zero_grad()
-    optimizer.zero_grad()
 
-    # print('shape: ', train_data.shape)
 
     train_data = train_data.unsqueeze(1)
     output = train_model(train_data.float())
     loss_func = F.nll_loss
-    # print('output: ', output)
     loss = loss_func(output, train_target.long())
-    # print('loss: ', loss)
 
     if args.is_proxy:
         proximal_term = 0.0
@@ -146,8 +144,6 @@ def train(learning_rate, train_model, train_data, train_target, device, optimize
         loss += (args.rou / 2) * proximal_term
 
     loss.backward()
-    # print('loss after backward: ', loss)
-    optimizer.step()
 
     Gradients_Tensor = []
     if gradient == False:
@@ -248,36 +244,31 @@ for itr in range(1, args.total_iterations + 1):
 
     # 生成与模型梯度结构相同的元素=0的列表
     Loss_train = torch.tensor(0., device=device)
+    Collect_Gradients = ZerosGradients(Layers_shape, device)
 
     # step 3
     # 对workers_list中选取的worker进行训练
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         model_round = models[train_data.location.id]
         optimizer = optims[train_data.location.id]
+        tau = taus[train_data.location.id]
 
         train_data, train_targets = train_data.to(device), train_targets.to(device)
         train_data, train_targets = train_data.get(), train_targets.get()
 
         Gradients_Sample, loss = train(copy.deepcopy(args.lr), model_round, train_data, train_targets, device,
-                                       optimizer)
+                                       optimizer, gradient=True)
 
         Loss_train += loss
 
+        c = math.floor(args.user_num / args.K)
+        for j in range(Layers_num):
+            Collect_Gradients[j] += Gradients_Sample[j] * args.lr / ((itr - tau + 1) * c)
+
     # step 4
     # 对全局模型进行更新
-    for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
-        # 当前worker的model和optimizer
-        model_round = models[train_data.location.id]
-        tau = taus[train_data.location.id]
-        # alpha_t = args.alpha * staleness_func_const(itr - tau)
-        # alpha_t = args.alpha * staleness_func_hinge(itr - tau)
-        alpha_t = args.alpha * staleness_func_poly(itr - tau)
-
-        # print('iter: {}, alpha_t: {}'.format(itr, alpha_t))
-
-        for grad_idx, (params_server, params_client) in enumerate(zip(model.parameters(), model_round.parameters())):
-            params_server.data.add_(-alpha_t, params_server.data)
-            params_server.data.add_(alpha_t, params_client.data)
+    for grad_idx, params_sever in enumerate(model.parameters()):
+        params_sever.data.add_(-1., Collect_Gradients[grad_idx])
 
     # 平均训练损失
     Loss_train /= (idx_outer + 1)
@@ -299,7 +290,7 @@ for itr in range(1, args.total_iterations + 1):
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
         logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
-        print('iter: {}, alpha_t: {}'.format(itr, alpha_t))
+        # print('iter: {}, alpha_t: {}'.format(itr, alpha_t))
         # for grad_idx, params_sever in enumerate(model.parameters()):
         #     print(params_sever.data)
 

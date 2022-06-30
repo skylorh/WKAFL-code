@@ -14,6 +14,7 @@ import torch
 import torchvision.transforms as transforms  # 实现图片变换处理的包
 from torchvision.transforms import ToPILImage
 import copy
+import math
 
 hook = sy.TorchHook(torch)
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 class Argument():
     def __init__(self):
         self.user_num = 10  # number of total clients P
-        self.K = 1  # number of participant clients K
+        self.K = 3  # number of participant clients K
         self.lr = 0.0001  # learning rate of global model
         self.batch_size = 8  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
@@ -113,18 +114,13 @@ def test(model, test_loader, device):
 
 
 ##########################定义训练过程，返回梯度########################
-def train(learning_rate, train_model, train_data, train_targets, device, optimizer):
+def train(learning_rate, train_model, train_data, train_targets, device, optimizer, gradient=True):
     train_model.train()
     train_model.zero_grad()
-    optimizer.zero_grad()
 
     train_targets = Variable(train_targets.long())
     optimizer.zero_grad()
     outputs = train_model(train_data)
-    # 计算准确率
-    # _, predicted = torch.max(outputs.data, 1)
-    # total = labels.size(0)
-    # correct = (predicted == labels).sum()
     criterion = nn.CrossEntropyLoss()
     loss = criterion(outputs, train_targets)
 
@@ -134,11 +130,16 @@ def train(learning_rate, train_model, train_data, train_targets, device, optimiz
             proximal_term += (w - w_t).norm(2)
         loss += (args.rou / 2) * proximal_term
 
-
     loss.backward()
-    optimizer.step()
 
-    return loss
+    Gradients_Tensor = []
+    if gradient == False:
+        for params in train_model.parameters():
+            Gradients_Tensor.append(-learning_rate * params.grad.data)  # 返回-lr*grad
+    if gradient == True:
+        for params in train_model.parameters():
+            Gradients_Tensor.append(params.grad.data)  # 把各层的梯度添加到张量Gradients_Tensor
+    return Gradients_Tensor, loss
 
 
 def staleness_func_const(t):
@@ -244,37 +245,36 @@ for itr in range(1, args.total_iterations + 1):
 
     # 生成与模型梯度结构相同的元素=0的列表
     Loss_train = torch.tensor(0., device=device)
+    Collect_Gradients = ZerosGradients(Layers_shape, device)
 
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         model_round = models[train_data.location.id]
         optimizer = optims[train_data.location.id]
+        tau = taus[train_data.location.id]
 
         train_data, train_targets = train_data.to(device), train_targets.to(device)
         train_data, train_targets = train_data.get(), train_targets.get()
 
         # 返回梯度张量，列表形式；同时返回loss；gradient=False，则返回-lr*grad
-        loss = train(args.lr, model_round, train_data, train_targets, device, optimizer)
+        Gradients_Sample, loss = train(copy.deepcopy(args.lr), model_round, train_data, train_targets, device,
+                                       optimizer, gradient=True)
         Loss_train += loss
 
-        # step 4
-        # 对全局模型进行更新
-        for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
-            # 当前worker的model和optimizer
-            model_round = models[train_data.location.id]
-            tau = taus[train_data.location.id]
-            # alpha_t = args.alpha * staleness_func_const(itr - tau)
-            # alpha_t = args.alpha * staleness_func_hinge(itr - tau)
-            alpha_t = args.alpha * staleness_func_poly(itr - tau)
+        c = math.floor(args.user_num / args.K)
+        for j in range(Layers_num):
+            Collect_Gradients[j] += Gradients_Sample[j] * args.lr / ((itr - tau + 1) * c)
 
-            # print('iter: {}, alpha_t: {}'.format(itr, alpha_t))
-
-            for grad_idx, (params_server, params_client) in enumerate(
-                    zip(model.parameters(), model_round.parameters())):
-                params_server.data.add_(-alpha_t, params_server.data)
-                params_server.data.add_(alpha_t, params_client.data)
+    # step 4
+    # 对全局模型进行更新
+    for grad_idx, params_sever in enumerate(model.parameters()):
+        params_sever.data.add_(-1., Collect_Gradients[grad_idx])
 
     # 平均训练损失
     Loss_train /= (idx_outer + 1)
+
+    # 升级延时信息
+    for worker in workers_list:
+        taus[worker] = itr
 
     # 同步更新不需要下面代码；异步更新需要下段代码
     for worker_idx in range(len(workers_list)):
