@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import struct
 import syft as sy
@@ -225,7 +227,7 @@ def dataset_federate_iid(dataset, workers, args, net='NOT CNN' ):
     datasets = []
     datasTotalNum = []
     for i in range(args.user_num):
-        datasNum = torch.randperm(40)[0]+10  #生成每个学习者本地数据量
+        datasNum = torch.randperm(1)[0]+1000  #生成每个学习者本地数据量
         datasTotalNum.append(datasNum)    #记录每个学习者本地数据量
         index = torch.randperm(60000)[0:datasNum]  #随机抽取数据
         user_data = datas[index, :, :]
@@ -266,3 +268,157 @@ datasets = loadDatesets(trainDataSize = 70000, testDataSize = 20000, dataType=da
 #训练集，测试集
 federated_data, datasNum = dataset_federate_noniid(datasets, workers, args)
 '''
+
+def dataset_federate_noniid_FedSA(dataset, workers, args, net='NOT CNN' ):
+    # worker_num: 10, labelClassNum: 5,  odd label: w1~w5, even label: w6~w10
+    """
+    Add a method to easily transform a torch.Dataset or a sy.BaseDataset
+    into a sy.FederatedDataset. The dataset given is split in len(workers)
+    part and sent to each workers
+    """
+    logger.info(f"Scanning and sending data to {', '.join([w.id for w in workers])}...")
+    datas = dataset['train_images']
+    labels = dataset['train_labels']
+
+    datasDivide = []
+    labelsDivide = []
+    # trainDataSize 和 testDataSize会有问题，labels并不是只有0-9
+    for i in range(10):
+        index = (labels==i)
+        datasDivide.append(datas[index, :, :])
+        labelsDivide.append(labels[index])
+    datasets = []
+    datasTotalNum = []
+    labelClassNum = 5
+    for i in range(args.user_num):
+        user_data = []
+        user_label = []
+        # 随机选取几类数据 tensor([2, 9])
+        if i < 5:
+            labelClass = torch.tensor([1, 3, 5, 7, 9])
+        else:
+            labelClass = torch.tensor([0, 2, 4, 6, 8])
+
+        # 每类数据随机分配一定百分比例 tensor([0.8884, 0.9903]) -> tensor([0.4729, 0.5271])
+        dataRate = torch.rand([labelClassNum])
+        dataRate = dataRate/torch.sum(dataRate)
+
+        # 10 ~ 50间的随机数 tensor(16) -> tensor([8., 8.])
+        dataNum = torch.randperm(2000)[0]+1000
+        dataNum = torch.round(dataNum*dataRate)
+
+        if labelClassNum>1:
+            # tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
+            datasnum = torch.zeros([10])
+            # tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
+            datasnum[labelClass.tolist()] = dataNum
+            datasTotalNum.append(datasnum)
+
+            for j in range(labelClassNum):
+                # 8
+                datanum = int(dataNum[j].item())
+                # 选取6000内的datanum个数据 tensor([5408, 5448, 5158, 2964, 1971,  166,  825, 4224])
+                # 有bug，当某一类别数据不到6000时可能会有IndexError
+                index = torch.randperm(6000)[0:datanum]
+                # 选取labelClass[j]类别中对应的数据
+                user_data.append(datasDivide[labelClass[j]][index,:,:])
+                # tensor([2., 2., 2., 2., 2., 2., 2., 2.])
+                user_label.append(labelClass[j]*torch.ones(datanum))
+            user_data = torch.cat(user_data, 0)
+            user_label = torch.cat(user_label, 0)
+        else:
+            j = 0
+            datasnum = torch.zeros([10])
+            datasnum[labelClass] = dataNum
+            datasTotalNum.append(datasnum)
+
+            datanum = int(dataNum[j].item())
+            index = torch.randperm(6000)[0:datanum]
+            user_data = datasDivide[labelClass[j]][index, :, :]
+            user_label = labelClass[j]*torch.ones(datanum)
+
+        worker = workers[i]
+        logger.debug("Sending data to worker %s", worker.id)
+        data = user_data.send(worker)
+        label = user_label.send(worker)
+        datasets.append(sy.BaseDataset(data, label))  # .send(worker)
+
+
+    logger.debug("Done!")
+    return sy.FederatedDataset(datasets), datasTotalNum
+
+def dataset_federate_noniid0dot9_FedSA(dataset, workers, args, net='NOT CNN' ):
+    # worker_num: 10, labelClassNum: 5,  odd label: w1~w5, even label: w6~w10
+    """
+    Add a method to easily transform a torch.Dataset or a sy.BaseDataset
+    into a sy.FederatedDataset. The dataset given is split in len(workers)
+    part and sent to each workers
+    """
+    logger.info(f"Scanning and sending data to {', '.join([w.id for w in workers])}...")
+    datas = dataset['train_images']
+    labels = dataset['train_labels']
+
+    datasDivide = []
+    labelsDivide = []
+    # trainDataSize 和 testDataSize会有问题，labels并不是只有0-9
+    for i in range(10):
+        index = (labels==i)
+        datasDivide.append(datas[index, :, :])
+        labelsDivide.append(labels[index])
+    datasets = []
+    datasTotalNum = []
+    labelClassNum = 10
+    for i in range(args.user_num):
+        user_data = []
+        user_label = []
+        labelClassIID = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+        # 随机选取几类数据 tensor([2, 9])
+        if i < 5:
+            labelClass = torch.tensor([1, 3, 5, 7, 9])
+        else:
+            labelClass = torch.tensor([0, 2, 4, 6, 8])
+
+        # 每类数据随机分配一定百分比例 tensor([0.8884, 0.9903]) -> tensor([0.4729, 0.5271])
+        dataRate = torch.rand([5])
+        dataRate = dataRate/torch.sum(dataRate)
+
+        dataRateIID = torch.rand([10])
+        dataRateIID = dataRateIID / torch.sum(dataRateIID)
+
+        # 10 ~ 50间的随机数 tensor(16) -> tensor([8., 8.])
+        dataNum = torch.randperm(math.ceil(2000*0.9))[0]+1000*0.9
+        dataNum = torch.round(dataNum*dataRate)
+
+        dataNumIID = torch.randperm(math.ceil(2000 * 0.1))[0]+1000*0.1
+        dataNumIID = torch.round(dataNumIID*dataRateIID)
+
+        # tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
+        datasnum = torch.zeros([10])
+        # tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
+        datasnum[labelClass.tolist()] = dataNum
+        datasnum[labelClassIID.tolist()] += dataNumIID
+
+        datasTotalNum.append(datasnum)
+
+        for j in range(labelClassNum):
+            # 8
+            datanum = int(datasnum[j].item())
+            # 选取6000内的datanum个数据 tensor([5408, 5448, 5158, 2964, 1971,  166,  825, 4224])
+            # 有bug，当某一类别数据不到6000时可能会有IndexError
+            index = torch.randperm(6000)[0:datanum]
+            # 选取labelClass[j]类别中对应的数据
+            user_data.append(datasDivide[labelClassIID[j]][index,:,:])
+            # tensor([2., 2., 2., 2., 2., 2., 2., 2.])
+            user_label.append(labelClassIID[j]*torch.ones(datanum))
+        user_data = torch.cat(user_data, 0)
+        user_label = torch.cat(user_label, 0)
+
+        worker = workers[i]
+        logger.debug("Sending data to worker %s", worker.id)
+        data = user_data.send(worker)
+        label = user_label.send(worker)
+        datasets.append(sy.BaseDataset(data, label))  # .send(worker)
+
+
+    logger.debug("Done!")
+    return sy.FederatedDataset(datasets), datasTotalNum
