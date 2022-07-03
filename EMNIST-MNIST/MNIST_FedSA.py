@@ -1,6 +1,5 @@
 import math
 import time
-from thop import profile
 import syft as sy
 import torch
 import torch.nn as nn
@@ -10,6 +9,7 @@ import logging
 import rawDatasetsLoader
 from datetime import datetime
 import copy
+import time
 
 hook = sy.TorchHook(torch)
 logger = logging.getLogger(__name__)
@@ -18,15 +18,15 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 10  # number of total clients P
-        self.K = 5  # number of participant clients K
-        self.lr = 0.0005  # learning rate of global model 0.0005
+        self.user_num = 100  # number of total clients P
+        self.K = 10  # number of participant clients K
+        self.lr = 0.005  # learning rate of global model 0.0005
         self.batch_size = 4  # batch size of each client for local training
-        self.itr_test = 50  # number of iterations for the two neighbour tests on test datasets
+        self.itr_test = 10  # number of iterations for the two neighbour tests on test datasets
         self.test_batch_size = 128  # batch size for test datasets
-        self.total_iterations = 5000  # total number of iterations
+        self.total_iterations = 1000  # total number of iterations
         self.seed = 1  # parameter for the server to initialize the model
-        self.classes = 5  # number of data classes on each client, which can determine the level of non-IID data
+        self.classes = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.cuda_use = True
         self.train_data_size = 100000
         self.test_data_size = 10000
@@ -40,8 +40,6 @@ use_cuda = args.cuda_use and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
-f_log = open("log_MNIST_GSGM.txt", "w")
-
 
 class Net(nn.Module):
     def __init__(self):
@@ -103,26 +101,18 @@ def test(model, test_loader, device):
             # torchvision.transforms.functional.normalize(data, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
             # data = nn.LayerNorm(data.size()[1:])
             # data = data_normal(data)
-            f_log.write('data: {}\ntarget: {}\n'.format(data, target))
             data = torch.squeeze(data)
             data = data.unsqueeze(1)
             data, target = data.to(device), target.to(device)
             output = model(data.float())
-            f_log.write('output: {}\n'.format(output))
             cur_loss = F.nll_loss(output, target.long(), reduction='sum').item() # sum up batch loss
-            # cur_loss = F.cross_entropy(output, target.long())  # sum up batch loss
 
             # print('cur_loss: ', cur_loss)
-            f_log.write('cur_loss: {}\n'.format(cur_loss))
             test_loss += cur_loss
             pred = output.argmax(1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    # print('test_loss: ', test_loss)
-    f_log.write('test_loss: {}\n'.format(test_loss))
     test_loss /= test_loader_len
-    # print('test_loss: ', test_loss)
-    f_log.write('test_loss: {}\n'.format(test_loss))
 
     test_acc = correct / test_loader_len
 
@@ -172,9 +162,10 @@ Qi = {}
 counti = {}      # 记录各个客户端的参与次数
 countsum = 0     # 记录总的参与次数
 
-input = torch.randn(1, 1, 28, 28, device=device)
-_, model_params_size = profile(model, inputs=(input, ))
-# 582026.0
+# from thop import profile
+# input = torch.randn(1, 1, 28, 28, device=device)
+# _, model_params_size = profile(model, inputs=(input, ))
+model_params_size = 582026.0
 # print('model_params_size: ', model_params_size)
 
 for i in range(1, args.user_num + 1):
@@ -234,9 +225,7 @@ test_loader = torch.utils.data.DataLoader(
 )
 
 # 定义记录字典
-logs = {'train_loss': [], 'test_loss': [], 'test_acc': []}
-test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-logs['test_acc'].append(test_acc)
+logs = {'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
 
 
 
@@ -342,8 +331,11 @@ Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 
 M = args.K
 
+fl_time = 0
 # 定义训练/测试过程
 for itr in range(1, args.total_iterations + 1):
+
+    itr_start_time = time.time()
 
     start_time = time.time()
 
@@ -365,6 +357,8 @@ for itr in range(1, args.total_iterations + 1):
     # step 2
     # 生成与模型梯度结构相同的元素=0的列表
     Loss_train = torch.tensor(0., device=device)
+    tau_avg = 0
+
 
     # step 3
     # 对workers_list中选取的worker进行训练
@@ -409,7 +403,8 @@ for itr in range(1, args.total_iterations + 1):
     for tau in taus:
         taus[tau] = taus[tau] + 1
     for worker in workers_list:
-        taus[worker] = 1
+        tau_avg += taus[worker]
+        taus[worker] = 0
         counti[worker] += 1
     countsum += len(workers_list)
 
@@ -431,60 +426,66 @@ for itr in range(1, args.total_iterations + 1):
 
     end_time = time.time()
 
-    # step 7
-    # logging thread
-    for worker_idx in range(args.user_num):
-        useri = "user{}".format(worker_idx+1)
-        _pi[useri] += end_time - start_time
-        # 增加区分度
-        # _pi[useri] += worker_idx * worker_idx
-        if useri in workers_list:
-            Qi[useri].append(_pi[useri])
-            pi[useri] = sum(Qi[useri]) / len(Qi[useri])
-            _pi[useri] = 0.
-            # print('useri: {} pi[useri]: {} '.format(useri, pi[useri]))
+    # # step 7
+    # # logging thread
+    # for worker_idx in range(args.user_num):
+    #     useri = "user{}".format(worker_idx+1)
+    #     _pi[useri] += end_time - start_time
+    #     # 增加区分度
+    #     # _pi[useri] += worker_idx * worker_idx
+    #     if useri in workers_list:
+    #         Qi[useri].append(_pi[useri])
+    #         pi[useri] = sum(Qi[useri]) / len(Qi[useri])
+    #         _pi[useri] = 0.
+    #         # print('useri: {} pi[useri]: {} '.format(useri, pi[useri]))
 
     # step 8
     # 计算下一轮的参与客户端个数并更新学习率
-    M = Algorithm2()
-
+    # M = Algorithm2()
+    M = args.K
 
 
     # 平均训练损失
     Loss_train /= (idx_outer + 1)
-    # print('Loss_train: ', Loss_train)
+    tau_avg /= (idx_outer + 1)
+    itr_end_time = time.time()
+    fl_time += itr_end_time - itr_start_time
 
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
-        print('lrs: {}'.format([float('{:.7f}'.format(i)) for i in list(lrs.values())]))
-        print('pi: {}'.format(pi))
+        # print('lrs: {}'.format([float('{:.7f}'.format(i)) for i in list(lrs.values())]))
+        # print('pi: {}'.format(pi))
 
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
         logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
-        # for grad_idx, params_sever in enumerate(model.parameters()):
-        #     print(params_sever.data)
+        logs['train_loss'].append(Loss_train.item())
+        logs['staleness'].append(tau_avg)
+        logs['time'].append(fl_time)
 
-    if itr == 1 or itr % args.itr_test == 0:
-        # 平均训练损失
-        Loss_train /= (idx_outer + 1)
-        logs['train_loss'].append(Loss_train)
 
 with open('./results/MNIST_FedSA_testacc.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedSA test_acc Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.classes, args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('GSGM: ' + str(logs['test_acc']))
+    fl.write(str(logs['test_acc']))
 
 with open('./results/MNIST_FedSA_trainloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+    fl.write('\n' + date + 'FedSA train_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
              format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('train_loss: ' + str(logs['train_loss']))
+    fl.write(str(logs['train_loss']))
 
 with open('./results/MNIST_FedSA_testloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+    fl.write('\n' + date + 'FedSA test_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
              format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('test_loss: ' + str(logs['test_loss']))
+    fl.write(str(logs['test_loss']))
 
+with open('./results/MNIST_FedSA_staleness.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedSA staleness Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['staleness']))
 
-
+with open('./results/MNIST_FedSA_time.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedSA time Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['time']))

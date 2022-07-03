@@ -58,7 +58,7 @@ def dataset_federate_noniid(trainset, workers, transform, classNum, data_size):
         labelClass = torch.randperm(10)[0:classNum]
         dataRate = torch.rand([classNum])
         dataRate = dataRate / torch.sum(dataRate)
-        dataNum = torch.randperm(1000)[0] + 1000
+        dataNum = torch.randperm(1000)[0] + 2000
         dataNum = torch.round(dataNum * dataRate)
         if classNum>1:
             datasnum = torch.zeros([10])
@@ -90,6 +90,36 @@ def dataset_federate_noniid(trainset, workers, transform, classNum, data_size):
         user_data = user_data.send(worker)
         user_label = user_label.send(worker)
         datasets.append(sy.BaseDataset(user_data, user_label))  # .send(worker)
+    logger.debug("Done!")
+    return sy.FederatedDataset(datasets), datasTotalNum
+
+def dataset_federate_iid(dataset, workers, transform, classNum, data_size):
+    """
+    Add a method to easily transform a torch.Dataset or a sy.BaseDataset
+    into a sy.FederatedDataset. The dataset given is split in len(workers)
+    part and sent to each workers
+    """
+    logger.info(f"Scanning and sending data to {', '.join([w.id for w in workers])}...")
+    datas = dataset['train_images']
+    labels = dataset['train_labels']
+
+    datasets = []
+    datasTotalNum = []
+    user_num = len(workers)
+    for i in range(user_num):
+        datasNum = torch.randperm(1000)[0]+2000  #生成每个学习者本地数据量
+        datasTotalNum.append(datasNum)    #记录每个学习者本地数据量
+        index = torch.randperm(60000)[0:datasNum]  #随机抽取数据
+        user_data = datas[index, :, :]
+        user_label = labels[index.tolist()]
+
+        worker = workers[i]
+        logger.debug("Sending data to worker %s", worker.id)
+        data = user_data.send(worker)
+        label = user_label.send(worker)
+        datasets.append(sy.BaseDataset(data, label))  # .send(worker)
+
+
     logger.debug("Done!")
     return sy.FederatedDataset(datasets), datasTotalNum
 

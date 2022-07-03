@@ -14,6 +14,7 @@ import torch
 import torchvision.transforms as transforms  # 实现图片变换处理的包
 import copy
 from thop import profile
+import time
 
 
 hook = sy.TorchHook(torch)
@@ -23,13 +24,13 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 10  # number of total clients P
-        self.K = 1  # number of participant clients K
+        self.user_num = 100  # number of total clients P
+        self.K = 5  # number of participant clients K
         self.lr = 0.001  # learning rate of global model
         self.batch_size = 8  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
         self.total_iterations = 10000  # total number of iterations
-        self.classNum = 5  # number of data classes on each client, which can determine the level of non-IID data
+        self.classNum = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.itr_test = 100  # number of iterations for the two neighbour tests on test datasets
         self.seed = 1  # parameter for the server to initialize the model
         self.cuda_use = True
@@ -45,7 +46,6 @@ use_cuda = args.cuda_use and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
-f_log = open("log_cifar10_FedAsync_SASGD.txt", "w")
 
 
 # 定义网络
@@ -206,10 +206,8 @@ test_loader = torch.utils.data.DataLoader(
 )
 
 # 定义记录字典
-logs = {'train_loss': [], 'test_loss': [], 'test_acc': []}
-test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-logs['test_acc'].append(test_acc.item())
-logs['test_loss'].append(test_loss)
+logs = {'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
+
 
 
 
@@ -309,8 +307,11 @@ Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 
 M = args.K
 
+fl_time = 0
 # 定义训练/测试过程
 for itr in range(1, args.total_iterations + 1):
+
+    itr_start_time = time.time()
 
     start_time = time.time()
 
@@ -327,6 +328,7 @@ for itr in range(1, args.total_iterations + 1):
 
     # 生成与模型梯度结构相同的元素=0的列表
     Loss_train = torch.tensor(0., device=device)
+    tau_avg = 0
 
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         # 当前worker的model和optimizer
@@ -368,7 +370,8 @@ for itr in range(1, args.total_iterations + 1):
         for tau in taus:
             taus[tau] = taus[tau] + 1
         for worker in workers_list:
-            taus[worker] = 1
+            tau_avg += taus[worker]
+            taus[worker] = 0
             counti[worker] += 1
         countsum += len(workers_list)
 
@@ -391,16 +394,16 @@ for itr in range(1, args.total_iterations + 1):
 
         end_time = time.time()
 
-        # step 7
-        # logging thread
-        for worker_idx in range(args.user_num):
-            useri = "user{}".format(worker_idx + 1)
-            _pi[useri] += end_time - start_time
-            if useri in workers_list:
-                Qi[useri].append(_pi[useri])
-                pi[useri] = sum(Qi[useri]) / len(Qi[useri])
-                _pi[useri] = 0.
-                # print('useri: {} pi[useri]: {} '.format(useri, pi[useri]))
+        # # step 7
+        # # logging thread
+        # for worker_idx in range(args.user_num):
+        #     useri = "user{}".format(worker_idx + 1)
+        #     _pi[useri] += end_time - start_time
+        #     if useri in workers_list:
+        #         Qi[useri].append(_pi[useri])
+        #         pi[useri] = sum(Qi[useri]) / len(Qi[useri])
+        #         _pi[useri] = 0.
+        #         # print('useri: {} pi[useri]: {} '.format(useri, pi[useri]))
 
         # step 8
         # 计算下一轮的参与客户端个数并更新学习率
@@ -408,33 +411,50 @@ for itr in range(1, args.total_iterations + 1):
         M = args.K
 
 
-        # 平均训练损失
-        Loss_train /= (idx_outer + 1)
-        # print('Loss_train: ', Loss_train)
+    # 平均训练损失
+    Loss_train /= (idx_outer + 1)
+    tau_avg /= (idx_outer + 1)
+    itr_end_time = time.time()
+    fl_time += itr_end_time - itr_start_time
+
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
+        # print('lrs: {}'.format([float('{:.7f}'.format(i)) for i in list(lrs.values())]))
+        # print('pi: {}'.format(pi))
+
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-        logs['test_acc'].append(test_acc.item() * 0.01)
+        logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
-        logs['train_loss'].append(Loss_train)
+        logs['train_loss'].append(Loss_train.item())
+        logs['staleness'].append(tau_avg)
+        logs['time'].append(fl_time)
 
-with open('./results/cifar10_FedAsync_testacc.txt', 'a+') as fl:
-    fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, total itr is {}, itr_test is {}, classNum is {})\n'.
-        format(args.user_num, args.K, args.batch_size, args.lr, args.total_iterations, args.itr_test, args.classNum))
-    fl.write('SASGD: ' + str(logs['test_acc']))
 
-with open('./results/cifar10_FedAsync_testloss.txt', 'a+') as fl:
+with open('./results/cifar10_FedSA_testacc.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, total itr is {}, itr_test is {}, classNum is {})\n'.
-        format(args.user_num, args.K, args.batch_size, args.lr, args.total_iterations, args.itr_test, args.classNum))
-    fl.write('testloss: ' + str(logs['test_loss']))
+        '\n' + date + 'FedSA test_acc Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        format(args.user_num, args.K, args.classNum, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['test_acc']))
 
-with open('./results/cifar10_FedAsync_trainloss.txt', 'a+') as fl:
-    fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, total itr is {}, itr_test is {}, classNum is {})\n'.
-        format(args.user_num, args.K, args.batch_size, args.lr, args.total_iterations, args.itr_test, args.classNum))
-    fl.write('trainloss: ' + str(logs['train_loss']))
+with open('./results/cifar10_FedSA_trainloss.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedSA train_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['train_loss']))
+
+with open('./results/cifar10_FedSA_testloss.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedSA test_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['test_loss']))
+
+with open('./results/cifar10_FedSA_staleness.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedSA staleness Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['staleness']))
+
+with open('./results/cifar10_FedSA_time.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedSA time Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['time']))
 
 
 

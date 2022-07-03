@@ -171,7 +171,7 @@ def dataset_federate_noniid(dataset, workers, args, net='NOT CNN' ):
         dataRate = dataRate/torch.sum(dataRate)
 
         # 10 ~ 50间的随机数 tensor(16) -> tensor([8., 8.])
-        dataNum = torch.randperm(2000)[0]+1000
+        dataNum = torch.randperm(1000)[0]+2000
         dataNum = torch.round(dataNum*dataRate)
 
         if labelClassNum>1:
@@ -227,7 +227,7 @@ def dataset_federate_iid(dataset, workers, args, net='NOT CNN' ):
     datasets = []
     datasTotalNum = []
     for i in range(args.user_num):
-        datasNum = torch.randperm(1)[0]+1000  #生成每个学习者本地数据量
+        datasNum = torch.randperm(1000)[0]+2000  #生成每个学习者本地数据量
         datasTotalNum.append(datasNum)    #记录每个学习者本地数据量
         index = torch.randperm(60000)[0:datasNum]  #随机抽取数据
         user_data = datas[index, :, :]

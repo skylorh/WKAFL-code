@@ -2,6 +2,8 @@
 data/
 CELEBA/__pycache__/
 EMNIST-MNIST/__pycache__/
+EMNIST-MNIST/results/
 EMNIST-ByClass/__pycache__/
 cifar10/__pycache__/
 cifar10/data2/
+cifar10/results/

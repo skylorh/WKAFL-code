@@ -22,14 +22,14 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 10  # number of total clients P
+        self.user_num = 100  # number of total clients P
         self.K = 5  # number of participant clients K
         self.lr = 0.0001  # learning rate of global model
         self.alpha = 0.1  # parameter for momentum
         self.batch_size = 8  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
         self.total_iterations = 10000  # total number of iterations
-        self.classNum = 10  # number of data classes on each client, which can determine the level of non-IID data
+        self.classNum = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.itr_test = 100  # number of iterations for the two tests on test datasets
         self.itr_train = 100  # number of iterations for the two tests on training datasets
         self.seed = 1  # parameter for the server to initialize the model
@@ -43,7 +43,6 @@ use_cuda = args.cuda_use and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
-f_log = open("log_cifar10_MNIST_GSGM.txt", "w")
 
 
 # 定义网络
@@ -76,12 +75,14 @@ def GetModelLayers(model):
         Layers_nodes.append(params.numel())
     return Layers_num + 1, Layers_shape, Layers_nodes
 
+
 ##################################设置各层的梯度为0#####################
 def ZerosGradients(Layers_shape, device):
     ZeroGradient = []
     for i in range(len(Layers_shape)):
         ZeroGradient.append(torch.zeros(Layers_shape[i], device=device))
     return ZeroGradient
+
 
 ############################定义测试函数################################
 def test(model, test_loader, device):
@@ -176,12 +177,11 @@ federated_data, dataNum = cifar10_dataloader.dataset_federate_noniid(
     args.train_data_size
 )
 
-
 # Di
 di_list = {}
 D = 0
 for i in range(args.user_num):
-    useri = "user{}".format(i+1)
+    useri = "user{}".format(i + 1)
     di = len(federated_data.datasets[useri])
     di_list[useri] = di
     D += di
@@ -198,10 +198,7 @@ test_loader = torch.utils.data.DataLoader(
 )
 
 # 定义记录字典
-logs = {'train_loss': [], 'test_loss': [], 'test_acc': []}
-test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-logs['test_acc'].append(test_acc.item())
-logs['test_loss'].append(test_loss)
+logs = {'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
 
 ###################################################################################
 print('start to run fl')
@@ -210,9 +207,11 @@ print('start to run fl')
 Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 
 # 定义训练/测试过程
-worker_have_list = []
+fl_time = 0
 
 for itr in range(1, args.total_iterations + 1):
+
+    itr_start_time = time.time()
 
     # 按设定的每回合用户数量和每个用户的批数量载入数据，单个批的大小为batch_size
     # 为了对每个样本上的梯度进行裁剪，令batch_size=1，batch_num=args.batch_size*args.batchs_round，将样本逐个计算梯度
@@ -264,32 +263,37 @@ for itr in range(1, args.total_iterations + 1):
 
     # 平均训练损失
     Loss_train /= (idx_outer + 1)
+    itr_end_time = time.time()
+    fl_time += itr_end_time - itr_start_time
 
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-        logs['test_acc'].append(test_acc.item())
+        logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
-        logs['train_loss'].append(Loss_train)
+        logs['train_loss'].append(Loss_train.item())
+        logs['time'].append(fl_time)
 
-with open('./results/cifar10_GSGM_testacc.txt', 'a+') as fl:
+with open('./results/cifar10_FedAvg_testacc.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, total itr is {}, itr_test is {}, classNum is {})\n'.
-        format(args.user_num, args.K, args.batch_size, args.lr, args.total_iterations, args.itr_test, args.classNum))
-    fl.write('GSGM: ' + str(logs['test_acc']))
+        '\n' + date + 'FedAvg: test_acc Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        format(args.user_num, args.K, args.classNum, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['test_acc']))
 
-with open('./results/cifar10_GSGM_testloss.txt', 'a+') as fl:
+with open('./results/cifar10_FedAvg_trainloss.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, total itr is {}, itr_test is {}, classNum is {})\n'.
-        format(args.user_num, args.K, args.batch_size, args.lr, args.total_iterations, args.itr_test, args.classNum))
-    fl.write('testloss: ' + str(logs['test_loss']))
+        '\n' + date + 'FedAvg: train_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['train_loss']))
 
-with open('./results/cifar10_GSGM_trainloss.txt', 'a+') as fl:
+with open('./results/cifar10_FedAvg_testloss.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, total itr is {}, itr_test is {}, classNum is {})\n'.
-        format(args.user_num, args.K, args.batch_size, args.lr, args.total_iterations, args.itr_test, args.classNum))
-    fl.write('trainloss: ' + str(logs['train_loss']))
+        '\n' + date + 'FedAvg: test_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['test_loss']))
 
-
-
-
+with open('./results/cifar10_FedAvg_time.txt', 'a+') as fl:
+    fl.write(
+        '\n' + date + 'FedAvg: time Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['time']))

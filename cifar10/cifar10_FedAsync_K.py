@@ -1,7 +1,6 @@
 import syft as sy
 import torch
 import torchvision
-import time
 from PIL import Image
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,6 +14,7 @@ import torch
 import torchvision.transforms as transforms  # 实现图片变换处理的包
 from torchvision.transforms import ToPILImage
 import copy
+import math
 import time
 
 hook = sy.TorchHook(torch)
@@ -25,7 +25,7 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 class Argument():
     def __init__(self):
         self.user_num = 100  # number of total clients P
-        self.K = 1  # number of participant clients K
+        self.K = 5  # number of participant clients K
         self.lr = 0.01  # learning rate of global model
         self.batch_size = 8  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
@@ -117,15 +117,10 @@ def test(model, test_loader, device):
 def train(learning_rate, train_model, train_data, train_targets, device, optimizer, gradient=True):
     train_model.train()
     train_model.zero_grad()
-    optimizer.zero_grad()
 
     train_targets = Variable(train_targets.long())
     optimizer.zero_grad()
     outputs = train_model(train_data)
-    # 计算准确率
-    # _, predicted = torch.max(outputs.data, 1)
-    # total = labels.size(0)
-    # correct = (predicted == labels).sum()
     criterion = nn.CrossEntropyLoss()
     loss = criterion(outputs, train_targets)
 
@@ -136,7 +131,6 @@ def train(learning_rate, train_model, train_data, train_targets, device, optimiz
         loss += (args.rou / 2) * proximal_term
 
     loss.backward()
-    optimizer.step()
 
     Gradients_Tensor = []
     if gradient == False:
@@ -230,12 +224,11 @@ print('start to run fl')
 # 获取模型层数和各层形状
 Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 
-# 定义训练/测试过程
 fl_time = 0
+# 定义训练/测试过程
 for itr in range(1, args.total_iterations + 1):
 
     itr_start_time = time.time()
-
     federated_train_loader = sy.FederatedDataLoader(
         federated_data,
         batch_size=args.batch_size,
@@ -248,36 +241,31 @@ for itr in range(1, args.total_iterations + 1):
 
     # 生成与模型梯度结构相同的元素=0的列表
     Loss_train = torch.tensor(0., device=device)
+    Collect_Gradients = ZerosGradients(Layers_shape, device)
     tau_avg = 0
 
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         model_round = models[train_data.location.id]
         optimizer = optims[train_data.location.id]
+        tau = taus[train_data.location.id]
 
         train_data, train_targets = train_data.to(device), train_targets.to(device)
         train_data, train_targets = train_data.get(), train_targets.get()
 
         # 返回梯度张量，列表形式；同时返回loss；gradient=False，则返回-lr*grad
         Gradients_Sample, loss = train(copy.deepcopy(args.lr), model_round, train_data, train_targets, device,
-                                       optimizer)
-
+                                       optimizer, gradient=True)
         Loss_train += loss
+        tau_avg += itr - tau
 
-        # step 4
-        # 对全局模型进行更新
-        for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
-            # 当前worker的model和optimizer
-            model_round = models[train_data.location.id]
-            tau = taus[train_data.location.id]
-            # alpha_t = args.alpha * staleness_func_const(itr - tau)
-            # alpha_t = args.alpha * staleness_func_hinge(itr - tau)
-            alpha_t = args.alpha * staleness_func_poly(itr - tau)
-            tau_avg += itr - tau
+        c = math.floor(args.user_num / args.K)
+        for j in range(Layers_num):
+            Collect_Gradients[j] += Gradients_Sample[j] * args.lr / ((itr - tau + 1) * c)
 
-            for grad_idx, (params_server, params_client) in enumerate(
-                    zip(model.parameters(), model_round.parameters())):
-                params_server.data.add_(-alpha_t, params_server.data)
-                params_server.data.add_(alpha_t, params_client.data)
+    # step 4
+    # 对全局模型进行更新
+    for grad_idx, params_sever in enumerate(model.parameters()):
+        params_sever.data.add_(-1., Collect_Gradients[grad_idx])
 
     # 升级延时信息
     for worker in workers_list:
@@ -290,12 +278,6 @@ for itr in range(1, args.total_iterations + 1):
             params_client.data = params_server.data
         models[workers_list[worker_idx]] = worker_model  ###添加把更新后的模型返回给用户
 
-    # 平均训练损失
-    Loss_train /= (idx_outer + 1)
-    tau_avg /= (idx_outer + 1)
-    itr_end_time = time.time()
-    fl_time += itr_end_time - itr_start_time
-
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
@@ -305,32 +287,32 @@ for itr in range(1, args.total_iterations + 1):
         logs['staleness'].append(tau_avg)
         logs['time'].append(fl_time)
 
-with open('./results/cifar10_FedAsync_testacc.txt', 'a+') as fl:
+with open('./results/cifar10_FedAsync_K_testacc.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + 'FedAsync test_acc Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedAsync_K test_acc Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.classNum, args.batch_size, args.lr, args.itr_test, args.total_iterations))
     fl.write(str(logs['test_acc']))
 
-with open('./results/cifar10_FedAsync_trainloss.txt', 'a+') as fl:
+with open('./results/cifar10_FedAsync_K_trainloss.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + 'FedAsync train_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedAsync_K train_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
     fl.write(str(logs['train_loss']))
 
-with open('./results/cifar10_FedAsync_testloss.txt', 'a+') as fl:
+with open('./results/cifar10_FedAsync_K_testloss.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + 'FedAsync test_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedAsync_K test_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
     fl.write(str(logs['test_loss']))
 
-with open('./results/cifar10_FedAsync_staleness.txt', 'a+') as fl:
+with open('./results/cifar10_FedAsync_K_staleness.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + 'FedAsync staleness Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedAsync_K staleness Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
     fl.write(str(logs['staleness']))
 
-with open('./results/cifar10_FedAsync_time.txt', 'a+') as fl:
+with open('./results/cifar10_FedAsync_K_time.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + 'FedAsync time Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedAsync_K time Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
     fl.write(str(logs['time']))

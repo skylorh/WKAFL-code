@@ -13,6 +13,7 @@ import torch
 import torchvision.transforms as transforms  # 实现图片变换处理的包
 from torchvision.transforms import ToPILImage
 import copy
+import time
 
 hook = sy.TorchHook(torch)
 logger = logging.getLogger(__name__)
@@ -21,18 +22,18 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 2000  # number of total clients P
-        self.K = 20  # number of participant clients K
+        self.user_num = 100  # number of total clients P
+        self.K = 5  # number of participant clients K
         self.CB1 = 70  # clip parameter in both stages
         self.CB2 = 5  # clip parameter B at stage two
-        self.lr = 0.0001  # learning rate of global model
+        self.lr = 0.01  # learning rate of global model
         self.itr_test = 100  # number of iterations for the two neighbour tests on test datasets
         self.batch_size = 8  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
         self.total_iterations = 10000  # total number of iterations
         self.stageTwo = 3500  # the iteration of stage one
         self.threshold = 0.3  # threshold to judge whether gradients are consistent
-        self.classNum = 2  # the number of data classes for each client
+        self.classNum = 1  # the number of data classes for each client
         self.alpha = 0.1  # parameter for momentum to alleviate the effect of non-IID data
         self.seed = 1  # parameter for the server to initialize the model
         self.cuda_use = True
@@ -45,7 +46,6 @@ use_cuda = args.cuda_use and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
-f_log = open("log_cifar10_MNIST_WKAFL.txt", "w")
 
 
 # 定义网络
@@ -250,8 +250,6 @@ federated_data, dataNum = cifar10_dataloader.dataset_federate_noniid(
     args.classNum,
     args.train_data_size
 )
-# Jaccard = JaDis(dataNum, args.user_num)
-# print('Jaccard distance is {}'.format(Jaccard))
 
 testset = tv.datasets.CIFAR10('data2/', train=False, download=True, transform=transform)
 testset = cifar10_dataloader.testLoader(testset, args.test_data_size)
@@ -267,19 +265,10 @@ del trainset
 for i in range(1, args.user_num + 1):
     exec('models["user{}"] = copy.deepcopy(model)'.format(i))
     exec('optims["user{}"] = optim.SGD(params=models["user{}"].parameters(), lr=copy.deepcopy(args.lr))'.format(i, i))
-# show = ToPILImage()         # 可以把Tensor转成Image,方便进行可视化
-# (data,label) = trainset[100]
-# show((data+1)/2).resize((100, 100))
-# dataiter = iter(trainloader)
-# images, labels = dataiter.next()
-# print(' '.join('%11s'%classes[labels[j]] for j in range(4)))
-# show(tv.utils.make_grid((images+1)/2)).resize((400, 100))    # make_grid的作用是将若干幅图像拼成一幅图像
 
 # 定义记录字典
-logs = {'train_loss': [], 'test_loss': [], 'test_acc': []}
-test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-logs['test_acc'].append(test_acc.item())
-logs['test_loss'].append(test_loss)
+logs = {'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
+
 
 ###################################################################################
 print('start to run fl')
@@ -289,6 +278,7 @@ Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 e = torch.exp(torch.tensor(1., device=device))
 # 定义训练/测试过程
 
+fl_time = 0
 for itr in range(1, args.total_iterations + 1):
 
     # 按设定的每回合用户数量和每个用户的批数量载入数据，单个批的大小为batch_size
@@ -303,15 +293,17 @@ for itr in range(1, args.total_iterations + 1):
     workers_list = federated_train_loader.workers  # 当前回合抽取的用户列表
 
     # 生成与模型梯度结构相同的元素=0的列表
+    K_Gradients = []
     Loss_train = torch.tensor(0., device=device)
+    tau_avg = 0
     weight = []
     K_tau = []
-    K_Gradients = []
 
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         model_round = models[train_data.location.id]
         optimizer = optims[train_data.location.id]
         K_tau.append(taus[train_data.location.id])
+        tau_avg += taus[train_data.location.id] - 1
 
         train_data, train_targets = train_data.to(device), train_targets.to(device)
         train_data, train_targets = train_data.get(), train_targets.get()
@@ -365,32 +357,52 @@ for itr in range(1, args.total_iterations + 1):
             params_client.data = params_server.data
         models[workers_list[worker_idx]] = worker_model  ###添加把更新后的模型返回给用户
 
+    # 平均训练损失
+    Loss_train /= (idx_outer + 1)
+    tau_avg /= (idx_outer + 1)
+    itr_end_time = time.time()
+    fl_time += itr_end_time - itr_start_time
+
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-        logs['test_acc'].append(test_acc.item())
+        logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
         logs['train_loss'].append(Loss_train.item())
+        logs['staleness'].append(tau_avg)
+        logs['time'].append(fl_time)
 
 with open('./results/cifar10_WKAFL_testacc.txt', 'a+') as fl:
-    fl.write('\n' + date + '%Results (UN is {}, K is {}, threshold is {}, CB1 is {}, CB2 is {}, BZ is {}, LR is {}, '.
-             format(args.user_num, args.K, args.threshold, args.CB1, args.CB2, args.batch_size, args.lr))
-    fl.write('total itr is {}, itr_test is {}, stageTwo is {}, classNum is {})\n'.
-             format(args.total_iterations, args.itr_test, args.stageTwo, args.classNum))
-    fl.write('WKAFL: ' + str(logs['test_acc']))
-
-with open('./results/cifar10_WKAFL_testloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' Results (UN is {}, K is {}, threshold is {}, CB1 is {}, CB2 is {}, BZ is {}, LR is {}, '.
-             format(args.user_num, args.K, args.threshold, args.CB1, args.CB2, args.batch_size, args.lr))
-    fl.write('total itr is {}, itr_test is {}, stageTwo is {}, classNum is {})\n'.
-             format(args.total_iterations, args.itr_test, args.stageTwo, args.classNum))
-    fl.write('testloss: ' + str(logs['test_loss']))
+    fl.write('\n' + date + 'WKAFL test_acc Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {}， classesis{})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations, args.classNum))
+    fl.write(str(logs['test_acc']))
 
 with open('./results/cifar10_WKAFL_trainloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' Results (UN is {}, K is {}, threshold is {}, CB1 is {}, CB2 is {}, BZ is {}, LR is {}, '.
-             format(args.user_num, args.K, args.threshold, args.CB1, args.CB2, args.batch_size, args.lr))
-    fl.write('total itr is {}, itr_test is {}, stageTwo is {}, classNum is {})\n'.
-             format(args.total_iterations, args.itr_test, args.stageTwo, args.classNum))
-    fl.write('trainloss: ' + str(logs['train_loss']))
+    fl.write('\n' + date + 'WKAFL train_loss Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['train_loss']))
 
+with open('./results/cifar10_WKAFL_testloss.txt', 'a+') as fl:
+    fl.write('\n' + date + 'WKAFL test_loss Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['test_loss']))
 
+with open('./results/cifar10_WKAFL_staleness.txt', 'a+') as fl:
+    fl.write('\n' + date + 'WKAFL staleness Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['staleness']))
+
+with open('./results/cifar10_WKAFL_time.txt', 'a+') as fl:
+    fl.write('\n' + date + 'WKAFL time Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['time']))

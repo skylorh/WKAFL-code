@@ -8,6 +8,7 @@ import logging
 import rawDatasetsLoader
 from datetime import datetime
 import copy
+import time
 
 hook = sy.TorchHook(torch)
 logger = logging.getLogger(__name__)
@@ -16,22 +17,22 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 1000  # number of total clients P
+        self.user_num = 100  # number of total clients P
         self.K = 10  # number of participant clients K
         self.CB1 = 100  # clip parameter in both stages
         self.CB2 = 10  # clip parameter B at stage two
-        self.lr = 0.0001  # learning rate of global model
-        self.itr_test = 50  # number of iterations for the two neighbour tests on test datasets
+        self.lr = 0.005  # learning rate of global model
+        self.itr_test = 10  # number of iterations for the two neighbour tests on test datasets
         self.batch_size = 4  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
-        self.total_iterations = 5000  # total number of iterations
+        self.total_iterations = 1000  # total number of iterations
         self.threshold = 0.3  # threshold to judge whether gradients are consistent
         self.alpha = 0.1  # parameter for momentum to alleviate the effect of non-IID data
         self.classes = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.seed = 1  # parameter for the server to initialize the model
         self.cuda_use = True
-        self.train_data_size = 70000
-        self.test_data_size = 20000
+        self.train_data_size = 100000
+        self.test_data_size = 10000
 
 
 args = Argument()
@@ -39,7 +40,6 @@ use_cuda = args.cuda_use and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
-f_log = open("log_MNIST_WKAFL.txt", "w")
 
 
 class Net(nn.Module):
@@ -231,8 +231,6 @@ datasets = rawDatasetsLoader.loadDatesets(
 
 # 训练集，测试集, datasNum为列表，datasNum[i]表示第i个学习者的信息，为字典，['3']=45表示图片三有45张
 federated_data, datasNum = rawDatasetsLoader.dataset_federate_noniid(datasets, workers, args)
-# Jaccard = JaDis(datasNum, args.user_num)
-# print('Jaccard distance is {}'.format(Jaccard))
 test_data = rawDatasetsLoader.testImages(datasets)
 del datasets
 
@@ -245,9 +243,7 @@ test_loader = torch.utils.data.DataLoader(
 )
 
 # 定义记录字典
-logs = {'train_loss': [], 'test_loss': [], 'test_acc': []}
-test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-logs['test_acc'].append(test_acc)
+logs = {'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
 
 ###################################################################################
 print('start to run fl')
@@ -257,8 +253,9 @@ Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 e = torch.exp(torch.tensor(1., device=device))
 # 定义训练/测试过程
 
+fl_time = 0
 for itr in range(1, args.total_iterations + 1):
-
+    itr_start_time = time.time()
     # 按设定的每回合用户数量和每个用户的批数量载入数据，单个批的大小为batch_size
     # 为了对每个样本上的梯度进行裁剪，令batch_size=1，batch_num=args.batch_size*args.batchs_round，将样本逐个计算梯度
     federated_train_loader = sy.FederatedDataLoader(
@@ -274,12 +271,15 @@ for itr in range(1, args.total_iterations + 1):
     # 生成与模型梯度结构相同的元素=0的列表
     K_Gradients = []
     Loss_train = torch.tensor(0., device=device)
+    tau_avg = 0
     weight = []
     K_tau = []
+
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         K_tau.append(taus[train_data.location.id])  # 添加延时信息
         model_round = models[train_data.location.id]
         optimizer = optims[train_data.location.id]
+        tau_avg += taus[train_data.location.id] - 1
 
         train_data, train_targets = train_data.to(device), train_targets.to(device)
         train_data, train_targets = train_data.get(), train_targets.get()
@@ -313,7 +313,7 @@ for itr in range(1, args.total_iterations + 1):
                 Collect_Gradients[j] += Gradients_Sample[j] * weight[i]
 
     # print('weight:', weight, 'tau', K_tau)
-    if itr < 1000:
+    if itr < 800:
         Collect_Gradients = aggregation(Collect_Gradients, K_Gradients, weight, Layers_shape, args, device)
     elif itr > 100:
         Collect_Gradients = aggregation(Collect_Gradients, K_Gradients, weight, Layers_shape, args, device, Clip=True)
@@ -335,33 +335,56 @@ for itr in range(1, args.total_iterations + 1):
             params_client.data = params_server.data
         models[workers_list[worker_idx]] = worker_model  # 添加把更新后的模型返回给用户
 
+    # 平均训练损失
+    Loss_train /= (idx_outer + 1)
+    tau_avg /= (idx_outer + 1)
+    itr_end_time = time.time()
+    fl_time += itr_end_time - itr_start_time
+
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
         logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
-    if itr == 1 or itr % args.itr_test == 0:
-        # 平均训练损失
-        Loss_train /= (idx_outer + 1)
-        logs['train_loss'].append(Loss_train)
+        logs['train_loss'].append(Loss_train.item())
+        logs['staleness'].append(tau_avg)
+        logs['time'].append(fl_time)
 
 with open('./results/MNIST_WKAFL_testacc.txt', 'a+') as fl:
-    fl.write('\n' + date + ' % Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
-             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(
+        '\n' + date + 'WKAFL test_acc Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+        format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
     fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {}， classesis{})\n'.
              format(args.batch_size, args.lr, args.itr_test, args.total_iterations, args.classes))
-    fl.write('WKAFL: ' + str(logs['test_acc']))
+    fl.write(str(logs['test_acc']))
 
 with open('./results/MNIST_WKAFL_trainloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' %Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
-             format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(
+        '\n' + date + 'WKAFL train_loss Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+        format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
     fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
              format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('train_loss = ' + str(logs['train_loss']))
+    fl.write(str(logs['train_loss']))
 
 with open('./results/MNIST_WKAFL_testloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' %Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+    fl.write(
+        '\n' + date + 'WKAFL test_loss Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+        format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['test_loss']))
+
+with open('./results/MNIST_WKAFL_staleness.txt', 'a+') as fl:
+    fl.write(
+        '\n' + date + 'WKAFL staleness Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
+        format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
+    fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['staleness']))
+
+with open('./results/MNIST_WKAFL_time.txt', 'a+') as fl:
+    fl.write('\n' + date + 'WKAFL time Results (user_num is {}, K is {}, CB1 is {}, CB2 is {}, sim_threshold is {},'.
              format(args.user_num, args.K, args.CB1, args.CB2, args.threshold))
     fl.write(' BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
              format(args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('test_loss: ' + str(logs['test_loss']))
+    fl.write(str(logs['time']))

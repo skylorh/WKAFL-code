@@ -1,5 +1,3 @@
-import math
-
 import numpy as np
 import syft as sy
 import torch
@@ -11,6 +9,7 @@ import rawDatasetsLoader
 from datetime import datetime
 import torchvision
 import copy
+import time
 
 hook = sy.TorchHook(torch)
 logger = logging.getLogger(__name__)
@@ -19,17 +18,17 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 10  # number of total clients P
-        self.K = 3  # number of participant clients K
-        self.lr = 0.00001  # learning rate of global model
+        self.user_num = 100  # number of total clients P
+        self.K = 1  # number of participant clients K
+        self.lr = 0.005  # learning rate of global model
         self.batch_size = 4  # batch size of each client for local training
-        self.itr_test = 50  # number of iterations for the two neighbour tests on test datasets
+        self.itr_test = 10  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
         self.test_batch_size = 128  # batch size for test datasets
-        self.total_iterations = 5000  # total number of iterations
+        self.total_iterations = 1000  # total number of iterations
         self.alpha = 0.05  #
         self.seed = 1  # parameter for the server to initialize the model
-        self.classes = 5  # number of data classes on each client, which can determine the level of non-IID data
+        self.classes = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.cuda_use = True
         self.train_data_size = 100000
         self.test_data_size = 10000
@@ -46,7 +45,6 @@ use_cuda = args.cuda_use and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
-f_log = open("log_MNIST_FedAsync.txt", "w")
 
 
 class Net(nn.Module):
@@ -97,26 +95,17 @@ def test(model, test_loader, device):
     # 测试数据不追踪梯度
     with torch.no_grad():
         for data, target in test_loader:
-            f_log.write('data: {}\ntarget: {}\n'.format(data, target))
             data = torch.squeeze(data)
             data = data.unsqueeze(1)
             data, target = data.to(device), target.to(device)
             output = model(data.float())
-            f_log.write('output: {}\n'.format(output))
             cur_loss = F.nll_loss(output, target.long(), reduction='sum').item()  # sum up batch loss
-            # cur_loss = F.cross_entropy(output, target.long())  # sum up batch loss
 
-            # print('cur_loss: ', cur_loss)
-            f_log.write('cur_loss: {}\n'.format(cur_loss))
             test_loss += cur_loss
             pred = output.argmax(1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    # print('test_loss: ', test_loss)
-    f_log.write('test_loss: {}\n'.format(test_loss))
     test_loss /= test_loader_len
-    # print('test_loss: ', test_loss)
-    f_log.write('test_loss: {}\n'.format(test_loss))
 
     test_acc = correct / test_loader_len
 
@@ -130,12 +119,16 @@ def test(model, test_loader, device):
 def train(learning_rate, train_model, train_data, train_target, device, optimizer, gradient=True):
     train_model.train()
     train_model.zero_grad()
+    optimizer.zero_grad()
 
+    # print('shape: ', train_data.shape)
 
     train_data = train_data.unsqueeze(1)
     output = train_model(train_data.float())
     loss_func = F.nll_loss
+    # print('output: ', output)
     loss = loss_func(output, train_target.long())
+    # print('loss: ', loss)
 
     if args.is_proxy:
         proximal_term = 0.0
@@ -144,6 +137,8 @@ def train(learning_rate, train_model, train_data, train_target, device, optimize
         loss += (args.rou / 2) * proximal_term
 
     loss.backward()
+    # print('loss after backward: ', loss)
+    optimizer.step()
 
     Gradients_Tensor = []
     if gradient == False:
@@ -215,9 +210,7 @@ test_loader = torch.utils.data.DataLoader(
 )
 
 # 定义记录字典
-logs = {'train_loss': [], 'test_loss': [], 'test_acc': []}
-test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
-logs['test_acc'].append(test_acc)
+logs = {'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
 
 ###################################################################################
 print('start to run fl')
@@ -226,8 +219,10 @@ print('start to run fl')
 Layers_num, Layers_shape, Layers_nodes = GetModelLayers(model)
 
 # 定义训练/测试过程
+fl_time = 0
 for itr in range(1, args.total_iterations + 1):
 
+    itr_start_time = time.time()
     # step 1
     # 按设定的每回合用户数量和每个用户的批数量载入数据，单个批的大小为batch_size
     # 为了对每个样本上的梯度进行裁剪，令batch_size=1，batch_num=args.batch_size*args.batchs_round，将样本逐个计算梯度
@@ -244,35 +239,37 @@ for itr in range(1, args.total_iterations + 1):
 
     # 生成与模型梯度结构相同的元素=0的列表
     Loss_train = torch.tensor(0., device=device)
-    Collect_Gradients = ZerosGradients(Layers_shape, device)
+    tau_avg = 0
 
     # step 3
     # 对workers_list中选取的worker进行训练
     for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
         model_round = models[train_data.location.id]
         optimizer = optims[train_data.location.id]
-        tau = taus[train_data.location.id]
 
         train_data, train_targets = train_data.to(device), train_targets.to(device)
         train_data, train_targets = train_data.get(), train_targets.get()
 
         Gradients_Sample, loss = train(copy.deepcopy(args.lr), model_round, train_data, train_targets, device,
-                                       optimizer, gradient=True)
+                                       optimizer)
 
         Loss_train += loss
 
-        c = math.floor(args.user_num / args.K)
-        for j in range(Layers_num):
-            Collect_Gradients[j] += Gradients_Sample[j] * args.lr / ((itr - tau + 1) * c)
-
     # step 4
     # 对全局模型进行更新
-    for grad_idx, params_sever in enumerate(model.parameters()):
-        params_sever.data.add_(-1., Collect_Gradients[grad_idx])
+    for idx_outer, (train_data, train_targets) in enumerate(federated_train_loader):
+        # 当前worker的model和optimizer
+        model_round = models[train_data.location.id]
+        tau = taus[train_data.location.id]
+        # alpha_t = args.alpha * staleness_func_const(itr - tau)
+        # alpha_t = args.alpha * staleness_func_hinge(itr - tau)
+        alpha_t = args.alpha * staleness_func_poly(itr - tau)
+        tau_avg += itr - tau
 
-    # 平均训练损失
-    Loss_train /= (idx_outer + 1)
-    # print('Loss_train: ', Loss_train)
+        for grad_idx, (params_server, params_client) in enumerate(zip(model.parameters(), model_round.parameters())):
+            params_server.data.add_(-alpha_t, params_server.data)
+            params_server.data.add_(alpha_t, params_client.data)
+
 
     # 升级延时信息
     for worker in workers_list:
@@ -285,32 +282,43 @@ for itr in range(1, args.total_iterations + 1):
             params_client.data = params_server.data
         models[workers_list[worker_idx]] = worker_model  ###添加把更新后的模型返回给用户
 
+    # 平均训练损失
+    Loss_train /= (idx_outer + 1)
+    tau_avg /= (idx_outer + 1)
+    itr_end_time = time.time()
+    fl_time += itr_end_time - itr_start_time
+
     if itr == 1 or itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)  # 初始模型的预测精度
         logs['test_acc'].append(test_acc)
         logs['test_loss'].append(test_loss)
-        # print('iter: {}, alpha_t: {}'.format(itr, alpha_t))
-        # for grad_idx, params_sever in enumerate(model.parameters()):
-        #     print(params_sever.data)
-
-    if itr == 1 or itr % args.itr_test == 0:
-        # 平均训练损失
-        Loss_train /= (idx_outer + 1)
-        logs['train_loss'].append(Loss_train)
+        logs['train_loss'].append(Loss_train.item())
+        logs['staleness'].append(tau_avg)
+        logs['time'].append(fl_time)
 
 with open('./results/MNIST_FedAsync_testacc.txt', 'a+') as fl:
     fl.write(
-        '\n' + date + ' Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+        '\n' + date + 'FedAsync test_acc Results (UN is {}, K is {}, classnum is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
         format(args.user_num, args.K, args.classes, args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('GSGM: ' + str(logs['test_acc']))
+    fl.write(str(logs['test_acc']))
 
 with open('./results/MNIST_FedAsync_trainloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+    fl.write('\n' + date + 'FedAsync train_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
              format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('train_loss: ' + str(logs['train_loss']))
+    fl.write(str(logs['train_loss']))
 
 with open('./results/MNIST_FedAsync_testloss.txt', 'a+') as fl:
-    fl.write('\n' + date + ' Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+    fl.write('\n' + date + 'FedAsync test_loss Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
              format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
-    fl.write('test_loss: ' + str(logs['test_loss']))
+    fl.write(str(logs['test_loss']))
+
+with open('./results/MNIST_FedAsync_staleness.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedAsync staleness Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['staleness']))
+
+with open('./results/MNIST_FedAsync_time.txt', 'a+') as fl:
+    fl.write('\n' + date + 'FedAsync time Results (UN is {}, K is {}, BZ is {}, LR is {}, itr_test is {}, total itr is {})\n'.
+             format(args.user_num, args.K, args.batch_size, args.lr, args.itr_test, args.total_iterations))
+    fl.write(str(logs['time']))
