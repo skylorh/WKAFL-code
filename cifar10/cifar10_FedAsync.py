@@ -24,10 +24,10 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument():
     def __init__(self):
-        self.user_num = 100  # number of total clients P
+        self.user_num = 10  # number of total clients P
         self.K = 1  # number of participant clients K
-        self.lr = 0.01  # learning rate of global model
-        self.batch_size = 8  # batch size of each client for local training
+        self.lr = 0.1  # learning rate of global model
+        self.batch_size = 128  # batch size of each client for local training
         self.test_batch_size = 128  # batch size for test datasets
         self.total_iterations = 10000  # total number of iterations
         self.classNum = 1  # number of data classes on each client, which can determine the level of non-IID data
@@ -53,25 +53,67 @@ device_cpu = torch.device("cpu")
 
 
 # 定义网络
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
+class ResidualBlock(nn.Module):
+    def __init__(self, inchannel, outchannel, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.left = nn.Sequential(
+            nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(outchannel),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(outchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(outchannel)
+        )
+        self.shortcut = nn.Sequential()
+        if stride != 1 or inchannel != outchannel:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(inchannel, outchannel, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(outchannel)
+            )
 
     def forward(self, x):
-        x = F.max_pool2d(F.relu(self.conv1(x)), (2, 2))
-        x = F.max_pool2d(F.relu(self.conv2(x)), 2)
-        x = x.view(x.size()[0], -1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+        out = self.left(x)
+        out = out + self.shortcut(x)
+        out = F.relu(out)
+
+        return out
 
 
+class ResNet(nn.Module):
+    def __init__(self, ResidualBlock, num_classes=10):
+        super(ResNet, self).__init__()
+        self.inchannel = 64
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
+        )
+        self.layer1 = self.make_layer(ResidualBlock, 64, 2, stride=1)
+        self.layer2 = self.make_layer(ResidualBlock, 128, 2, stride=2)
+        self.layer3 = self.make_layer(ResidualBlock, 256, 2, stride=2)
+        self.layer4 = self.make_layer(ResidualBlock, 512, 2, stride=2)
+        self.fc = nn.Linear(512, num_classes)
+
+    def make_layer(self, block, channels, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.inchannel, channels, stride))
+            self.inchannel = channels
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+        return out
+
+def ResNet18():
+    return ResNet(ResidualBlock)
 ##################################获取模型层数和各层的形状#############
 def GetModelLayers(model):
     Layers_shape = []
@@ -179,7 +221,7 @@ def JaDis(datasNum, userNum):
 ###################################################################################
 print('start to gen model and workers')
 ##################################模型和用户生成###################################
-model = Net()
+model = ResNet18()
 model.cuda()
 workers = []
 models = {}
@@ -188,31 +230,43 @@ taus = {}
 for i in range(1, args.user_num + 1):
     exec('user{} = sy.VirtualWorker(hook, id="user{}")'.format(i, i))
     exec('models["user{}"] = copy.deepcopy(model)'.format(i))
-    exec('optims["user{}"] = optim.SGD(params=models["user{}"].parameters(), lr=copy.deepcopy(args.lr))'.format(i, i))
+    exec('optims["user{}"] = optim.SGD(model.parameters(), lr=args.lr)'.format(i, i))
     exec('workers.append(user{})'.format(i))  # 列表形式存储用户
     exec('taus["user{}"] = {}'.format(i, 1))  # 列表形式存储用户
     # exec('workers["user{}"] = user{}'.format(i,i))    # 字典形式存储用户
 
-optim_sever = optim.SGD(params=model.parameters(), lr=args.lr)  # 定义服务器优化器
+#define loss funtion & optimizer
+criterion = nn.CrossEntropyLoss()
+# optim_sever = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+optim_sever = optim.SGD(model.parameters(), lr=args.lr)
 
 ###################################################################################
 print('start to load data')
 ###############################数据载入############################################
 
-# 使用torchvision加载并预处理CIFAR10数据集
-transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))])
-# 把数据变为tensor并且归一化range [0, 255] -> [0.0,1.0]
-trainset = tv.datasets.CIFAR10(root='data2/', train=True, download=False, transform=transform)
+#prepare dataset and preprocessing
+transform_train = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+])
+
+transform_test = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+])
+
+trainset = torchvision.datasets.CIFAR10(root='data2/', train=True, download=False, transform=transform_train)
 federated_data, dataNum = cifar10_dataloader.dataset_federate_noniid(
     trainset,
     workers,
-    transform,
+    transform_train,
     args.classNum,
     args.train_data_size
 )
 
-testset = tv.datasets.CIFAR10('data2/', train=False, download=False)
-testset = cifar10_dataloader.testLoader(testset, args.test_data_size)
+testset = torchvision.datasets.CIFAR10(root='data2/', train=False, download=False, transform=transform_test)
 test_loader = torch.utils.data.DataLoader(
     testset,
     batch_size=args.test_batch_size,

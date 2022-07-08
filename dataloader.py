@@ -197,6 +197,7 @@ class FederatedDataLoader(object):
         iter_per_worker=False,
         worker_num = 0,
         batch_num = 0,
+        aggregating_workers = [],
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -217,6 +218,7 @@ class FederatedDataLoader(object):
         self.drop_last = drop_last
         self.collate_fn = collate_fn
         self.iter_class = _DataLoaderOneWorkerIter if iter_per_worker else _DataLoaderIter
+        self.aggregating_workers = aggregating_workers
 
         # Build a batch sampler per worker
         self.batch_samplers = {}
@@ -225,7 +227,10 @@ class FederatedDataLoader(object):
                 if worker in self.workers:
                     self.workers.remove(worker)
         if worker_num !=0:
-            self.workers = random.sample(self.workers,worker_num)
+            if self.aggregating_workers != []:
+                self.workers = self.aggregating_workers
+            else:
+                self.workers = random.sample(self.workers,worker_num)
         if worker_one_round:
             for worker in self.workers:
                 self.worker_have_list.append(worker)
