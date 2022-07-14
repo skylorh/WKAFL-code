@@ -58,7 +58,7 @@ def dataset_federate_noniid(trainset, workers, transform, classNum, data_size):
         labelClass = torch.randperm(10)[0:classNum]
         dataRate = torch.rand([classNum])
         dataRate = dataRate / torch.sum(dataRate)
-        dataNum = torch.randperm(1000)[0] + 2000
+        dataNum = torch.randperm(100)[0] + 100
         dataNum = torch.round(dataNum * dataRate)
         if classNum>1:
             datasnum = torch.zeros([10])
@@ -107,7 +107,7 @@ def dataset_federate_iid(dataset, workers, transform, classNum, data_size):
     datasTotalNum = []
     user_num = len(workers)
     for i in range(user_num):
-        datasNum = torch.randperm(1000)[0]+2000  #生成每个学习者本地数据量
+        datasNum = torch.randperm(500)[0]+1000  #生成每个学习者本地数据量
         datasTotalNum.append(datasNum)    #记录每个学习者本地数据量
         index = torch.randperm(60000)[0:datasNum]  #随机抽取数据
         user_data = datas[index, :, :]

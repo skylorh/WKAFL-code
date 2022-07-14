@@ -30,12 +30,12 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument:
     def __init__(self):
-        self.user_num = 2000  # number of total clients P
+        self.user_num = 1000  # number of total clients P
         self.K = 20  # number of participant clients K
         self.update_num = 30
         self.CB1 = 70  # clip parameter in both stages
         self.CB2 = 5  # clip parameter B at stage two
-        self.lr = 0.0005  # learning rate of global model
+        self.lr = 0.001  # learning rate of global model
         self.batch_size = 8  # batch size of each client for local training
         self.itr_test = 100  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
@@ -44,7 +44,7 @@ class Argument:
         self.threshold = 0.3  # threshold to judge whether gradients are consistent
         self.alpha = 0.1  # parameter for momentum to alleviate the effect of non-IID data
         self.seed = 1  # parameter for the server to initialize the model
-        self.classNum = 10  # number of data classes on each client, which can determine the level of non-IID data
+        self.classNum = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.cuda_use = True
         self.train_data_size = 50000
         self.test_data_size = 10000
@@ -304,6 +304,14 @@ test_loader = torch.utils.data.DataLoader(
     num_workers=0
 )
 
+di_list = {}
+D = 0
+for i in range(args.user_num):
+    useri = "user{}".format(i+1)
+    di = len(federated_data.datasets[useri])
+    di_list[useri] = di
+    D += di
+print('di_list: {}'.format(di_list))
 
 # 定义记录字典
 logs = {'aggregation': [], 'itr': [], 'train_loss': [], 'test_loss': [], 'test_acc': [], 'staleness': [], 'time': []}
@@ -399,7 +407,7 @@ for itr in range(1, args.total_iterations + 1):
                 Collect_Gradients[j] += Gradients_Sample[j] * weight[i]
 
     # print('weight:', weight, 'tau', K_tau)
-    if itr < 5000:
+    if itr < 5500:
         Collect_Gradients = aggregation(Collect_Gradients, K_Gradients, weight, Layers_shape, args, device)
     elif itr > 100:
         Collect_Gradients = aggregation(Collect_Gradients, K_Gradients, weight, Layers_shape, args, device, Clip=True)
@@ -415,11 +423,12 @@ for itr in range(1, args.total_iterations + 1):
     tau_avg /= (idx_outer + 1)
     fl_time += aggregating_workers_time_max
 
-    if itr == 1 or itr % args.itr_test == 0:
+    if itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
+        print('train_loss: ', Loss_train.item())
         test_loss, test_acc = test(model, test_loader, device)
         logs['itr'].extend(workers_list)
-        logs['test_acc'].append(test_acc)
+        logs['test_acc'].append(test_acc.item())
         logs['test_loss'].append(test_loss)
         logs['train_loss'].append(Loss_train.item())
         logs['staleness'].append(tau_avg)

@@ -30,21 +30,21 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 class Argument:
     def __init__(self):
         self.user_num = 100  # number of total clients P
-        self.K = 5  # number of participant clients K
-        self.update_num = 10  # 每轮更新的客户端数目
+        self.K = 10  # number of participant clients K
+        self.update_num = 15  # 每轮更新的客户端数目
         self.lr = 0.005  # learning rate of global model
         self.batch_size = 4  # batch size of each client for local training
         self.itr_test = 10  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
         self.test_batch_size = 128  # batch size for test datasets
-        self.total_iterations = 1000  # total number of iterations
+        self.total_iterations = 1500  # total number of iterations
         self.seed = 1  # parameter for the server to initialize the model
         self.classes = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.cuda_use = True
         self.train_data_size = 100000
         self.test_data_size = 10000
 
-        self.tau0 = 3
+        self.tau0 = 10
         self.K_star = 280
         self.phi = 0.05
         self.B = 582026 * 1200  # 通信预算
@@ -228,7 +228,7 @@ for i in range(1, args.user_num + 1):
     exec('_pi["user{}"] = {}'.format(i, 0.))
     exec('Qi["user{}"] = []'.format(i))
     exec('counti["user{}"] = {}'.format(i, 0))
-    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 5), random.uniform(0.1, 0.2))'.format(i))
+    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 0.3), random.uniform(0.1, 0.2))'.format(i))
 
 #################
 #     数据载入   #
@@ -471,7 +471,7 @@ for itr in range(1, args.total_iterations + 1):
     tau_avg /= (idx_outer + 1)
     fl_time += aggregating_workers_time_max
 
-    if itr == 1 or itr % args.itr_test == 0:
+    if itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)
         logs['itr'].extend(workers_list)

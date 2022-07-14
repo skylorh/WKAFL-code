@@ -30,10 +30,10 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument:
     def __init__(self):
-        self.user_num = 100  # number of total clients P
+        self.user_num = 500  # number of total clients P
         self.K = 1  # number of participant clients K
-        self.update_num = 5
-        self.lr = 0.005  # learning rate of global model
+        self.update_num = 30
+        self.lr = 0.001  # learning rate of global model
         self.batch_size = 8  # batch size of each client for local training
         self.itr_test = 100  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
@@ -226,7 +226,7 @@ for i in range(1, args.user_num + 1):
     exec('workers.append(user{})'.format(i))
     exec('users.append("user{}")'.format(i))
     exec('itrs["user{}"] = {}'.format(i, 1))
-    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 5), random.uniform(0.1, 0.2))'.format(i))
+    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 0.3), random.uniform(0.1, 0.2))'.format(i))
 
 #################
 #     数据载入   #
@@ -335,11 +335,11 @@ for itr in range(1, args.total_iterations + 1):
     tau_avg /= (idx_outer + 1)
     fl_time += aggregating_workers_time_max
 
-    if itr == 1 or itr % args.itr_test == 0:
+    if  itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)
         logs['itr'].extend(workers_list)
-        logs['test_acc'].append(test_acc)
+        logs['test_acc'].append(test_acc.item())
         logs['test_loss'].append(test_loss)
         logs['train_loss'].append(Loss_train.item())
         logs['staleness'].append(tau_avg)

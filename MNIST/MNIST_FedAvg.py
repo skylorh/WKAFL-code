@@ -13,6 +13,7 @@ import copy
 import time
 import random
 import heapq
+from torch import autograd
 
 # 日志设置
 logging.basicConfig(level=logging.INFO
@@ -34,7 +35,7 @@ class Argument:
         self.itr_test = 10  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
         self.test_batch_size = 128  # batch size for test datasets
-        self.total_iterations = 1000  # total number of iterations
+        self.total_iterations = 1500  # total number of iterations
         self.seed = 1  # parameter for the server to initialize the model
         self.classes = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.cuda_use = True
@@ -118,24 +119,26 @@ def test(model, test_loader, device):
 
 ##########################定义训练过程，返回梯度########################
 def train(learning_rate, train_model, train_data, train_target, device, gradient=True):
-    optimizer = optim.SGD(train_model.parameters(), lr=learning_rate)
-    train_model.train()
-    optimizer.zero_grad()
-    train_data = train_data.unsqueeze(1)
-    output = train_model(train_data.float())
-    loss_func = F.nll_loss
-    loss = loss_func(output, train_target.long())
-    loss.backward()
-    optimizer.step()
+    with autograd.detect_anomaly():
+        optimizer = optim.SGD(train_model.parameters(), lr=learning_rate)
+        train_model.train()
+        optimizer.zero_grad()
+        train_data = train_data.unsqueeze(1)
+        output = train_model(train_data.float())
+        loss_func = F.nll_loss
+        loss = loss_func(output, train_target.long())
+        loss.backward()
+        optimizer.step()
 
-    Gradients_Tensor = []
-    if gradient == False:
-        for params in train_model.parameters():
-            Gradients_Tensor.append(-learning_rate * params.grad.data)  # 返回-lr*grad
-    if gradient == True:
-        for params in train_model.parameters():
-            Gradients_Tensor.append(params.grad.data)  # 把各层的梯度添加到张量Gradients_Tensor
-    return Gradients_Tensor, loss
+
+        Gradients_Tensor = []
+        if gradient == False:
+            for params in train_model.parameters():
+                Gradients_Tensor.append(-learning_rate * params.grad.data)  # 返回-lr*grad
+        if gradient == True:
+            for params in train_model.parameters():
+                Gradients_Tensor.append(params.grad.data)  # 把各层的梯度添加到张量Gradients_Tensor
+        return Gradients_Tensor, loss
 
 
 class TimeMaker:
@@ -182,7 +185,7 @@ for i in range(1, args.user_num + 1):
     exec('workers.append(user{})'.format(i))
     exec('users.append("user{}")'.format(i))
     exec('itrs["user{}"] = {}'.format(i, 1))
-    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 5), random.uniform(0.1, 0.2))'.format(i))
+    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 0.3), random.uniform(0.1, 0.2))'.format(i))
 
 #################
 #     数据载入   #
@@ -251,7 +254,7 @@ for itr in range(1, args.total_iterations + 1):
         batch_size=args.batch_size,
         shuffle=True,
         worker_num=args.K,
-        batch_num=3,
+        batch_num=1,
         selected_workers=workers_refresh
     )
 
@@ -288,7 +291,7 @@ for itr in range(1, args.total_iterations + 1):
     Loss_train /= (idx_outer + 1)
     fl_time += aggregating_workers_time_max
 
-    if itr == 1 or itr % args.itr_test == 0:
+    if itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)
         logs['itr'].extend(workers_list)

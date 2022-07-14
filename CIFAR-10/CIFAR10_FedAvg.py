@@ -30,16 +30,16 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 
 class Argument:
     def __init__(self):
-        self.user_num = 100  # number of total clients P
-        self.K = 10  # number of participant clients K
-        self.lr = 0.05  # learning rate of global model 0.005
-        self.batch_size = 32  # batch size of each client for local training
+        self.user_num = 500  # number of total clients P
+        self.K = 20  # number of participant clients K
+        self.lr = 0.001  # learning rate of global model 0.005
+        self.batch_size = 8  # batch size of each client for local training
         self.itr_test = 100  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
         self.test_batch_size = 128  # batch size for test datasets
         self.total_iterations = 10000  # total number of iterations
         self.seed = 1  # parameter for the server to initialize the model
-        self.classNum = 10  # number of data classes on each client, which can determine the level of non-IID data
+        self.classNum = 1  # number of data classes on each client, which can determine the level of non-IID data
         self.cuda_use = True
         self.train_data_size = 50000
         self.test_data_size = 10000
@@ -52,65 +52,65 @@ device = torch.device("cuda" if use_cuda else "cpu")
 device_cpu = torch.device("cpu")
 
 
-# class Net(nn.Module):
-#     def __init__(self):
-#         super(Net, self).__init__()
-#         self.conv1 = nn.Conv2d(3, 6, 5)
-#         self.conv2 = nn.Conv2d(6, 16, 5)
-#         self.fc1 = nn.Linear(16 * 5 * 5, 120)
-#         self.fc2 = nn.Linear(120, 84)
-#         self.fc3 = nn.Linear(84, 10)
-
-#     def forward(self, x):
-#         x = F.max_pool2d(F.relu(self.conv1(x)), (2, 2))
-#         x = F.max_pool2d(F.relu(self.conv2(x)), 2)
-#         x = x.view(x.size()[0], -1)
-#         x = F.relu(self.fc1(x))
-#         x = F.relu(self.fc2(x))
-#         x = self.fc3(x)
-#         return x
-
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
-        self.conv2 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
-        self.conv4 = nn.Conv2d(128, 128, 3, padding=1)
-        self.conv5 = nn.Conv2d(128, 256, 3, padding=1)
-        self.conv6 = nn.Conv2d(256, 256, 3, padding=1)
-        self.maxpool = nn.MaxPool2d(2, 2)
-        self.avgpool = nn.AvgPool2d(2, 2)
-        self.globalavgpool = nn.AvgPool2d(8, 8)
-        # self.bn1 = nn.BatchNorm2d(64)
-        # self.bn2 = nn.BatchNorm2d(128)
-        # self.bn3 = nn.BatchNorm2d(256)
-        self.dropout50 = nn.Dropout(0.5)
-        self.dropout10 = nn.Dropout(0.1)
-        self.fc = nn.Linear(256, 10)
+        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 10)
 
     def forward(self, x):
-        # x = self.bn1(F.relu(self.conv1(x)))
-        # x = self.bn1(F.relu(self.conv2(x)))
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = self.maxpool(x)
-        x = self.dropout10(x)
-        # x = self.bn2(F.relu(self.conv3(x)))
-        # x = self.bn2(F.relu(self.conv4(x)))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
-        x = self.avgpool(x)
-        x = self.dropout10(x)
-        # x = self.bn3(F.relu(self.conv5(x)))
-        # x = self.bn3(F.relu(self.conv6(x)))
-        x = F.relu(self.conv5(x))
-        x = F.relu(self.conv6(x))
-        x = self.globalavgpool(x)
-        x = self.dropout50(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
+        x = F.max_pool2d(F.relu(self.conv1(x)), (2, 2))
+        x = F.max_pool2d(F.relu(self.conv2(x)), 2)
+        x = x.view(x.size()[0], -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
+
+# class Net(nn.Module):
+#     def __init__(self):
+#         super(Net, self).__init__()
+#         self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+#         self.conv2 = nn.Conv2d(64, 64, 3, padding=1)
+#         self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
+#         self.conv4 = nn.Conv2d(128, 128, 3, padding=1)
+#         self.conv5 = nn.Conv2d(128, 256, 3, padding=1)
+#         self.conv6 = nn.Conv2d(256, 256, 3, padding=1)
+#         self.maxpool = nn.MaxPool2d(2, 2)
+#         self.avgpool = nn.AvgPool2d(2, 2)
+#         self.globalavgpool = nn.AvgPool2d(8, 8)
+#         # self.bn1 = nn.BatchNorm2d(64)
+#         # self.bn2 = nn.BatchNorm2d(128)
+#         # self.bn3 = nn.BatchNorm2d(256)
+#         self.dropout50 = nn.Dropout(0.5)
+#         self.dropout10 = nn.Dropout(0.1)
+#         self.fc = nn.Linear(256, 10)
+
+#     def forward(self, x):
+#         # x = self.bn1(F.relu(self.conv1(x)))
+#         # x = self.bn1(F.relu(self.conv2(x)))
+#         x = F.relu(self.conv1(x))
+#         x = F.relu(self.conv2(x))
+#         x = self.maxpool(x)
+#         x = self.dropout10(x)
+#         # x = self.bn2(F.relu(self.conv3(x)))
+#         # x = self.bn2(F.relu(self.conv4(x)))
+#         x = F.relu(self.conv3(x))
+#         x = F.relu(self.conv4(x))
+#         x = self.avgpool(x)
+#         x = self.dropout10(x)
+#         # x = self.bn3(F.relu(self.conv5(x)))
+#         # x = self.bn3(F.relu(self.conv6(x)))
+#         x = F.relu(self.conv5(x))
+#         x = F.relu(self.conv6(x))
+#         x = self.globalavgpool(x)
+#         x = self.dropout50(x)
+#         x = x.view(x.size(0), -1)
+#         x = self.fc(x)
+#         return x
 
 
 def call_bn(bn, x):
@@ -277,7 +277,7 @@ for i in range(1, args.user_num + 1):
     exec('workers.append(user{})'.format(i))
     exec('users.append("user{}")'.format(i))
     exec('itrs["user{}"] = {}'.format(i, 1))
-    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 5), random.uniform(0.1, 0.2))'.format(i))
+    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 0.3), random.uniform(0.1, 0.2))'.format(i))
 
 #################
 #     数据载入   #
@@ -383,12 +383,12 @@ for itr in range(1, args.total_iterations + 1):
     Loss_train /= (idx_outer + 1)
     fl_time += aggregating_workers_time_max
 
-    if itr == 1 or itr % args.itr_test == 0:
+    if  itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         print('Loss_train: ', Loss_train.item())
         test_loss, test_acc = test(model, test_loader, device)
         logs['itr'].extend(workers_list)
-        logs['test_acc'].append(test_acc)
+        logs['test_acc'].append(test_acc.item())
         logs['test_loss'].append(test_loss)
         logs['train_loss'].append(Loss_train.item())
         logs['time'].append(fl_time)
@@ -396,7 +396,7 @@ for itr in range(1, args.total_iterations + 1):
 
 # 保存结果
 log_title = '\n' + date + 'FedAvg Results (user_num is {}, K is {}, class_num is {}, batch_size is {}, LR is {}, itr_test is {}, total itr is {})\n'. \
-    format(args.user_num, args.K, args.classes, args.batch_size, args.lr, args.itr_test, args.total_iterations)
+    format(args.user_num, args.K, args.classNum, args.batch_size, args.lr, args.itr_test, args.total_iterations)
 
 with open('./results/CIFAR10_FedAvg.txt', 'a+') as fl:
     fl.write(log_title)

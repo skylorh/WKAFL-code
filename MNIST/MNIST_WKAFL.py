@@ -30,8 +30,8 @@ date = datetime.now().strftime('%Y-%m-%d %H:%M')
 class Argument:
     def __init__(self):
         self.user_num = 100  # number of total clients P
-        self.K = 5  # number of participant clients K
-        self.update_num = 10  # 每轮更新的客户端数目
+        self.K = 10  # number of participant clients K
+        self.update_num = 15  # 每轮更新的客户端数目
         self.CB1 = 100  # clip parameter in both stages
         self.CB2 = 10  # clip parameter B at stage two
         self.lr = 0.005  # learning rate of global model
@@ -39,7 +39,7 @@ class Argument:
         self.itr_test = 10  # number of iterations for the two neighbour tests on test datasets
         self.itr_train = 100  # number of iterations for the two neighbour tests on training datasets
         self.test_batch_size = 128  # batch size for test datasets
-        self.total_iterations = 1000  # total number of iterations
+        self.total_iterations = 1500  # total number of iterations
         self.threshold = 0.3  # threshold to judge whether gradients are consistent
         self.alpha = 0.1  # parameter for momentum to alleviate the effect of non-IID data
         self.seed = 1  # parameter for the server to initialize the model
@@ -281,7 +281,7 @@ for i in range(1, args.user_num + 1):
     exec('workers.append(user{})'.format(i))
     exec('users.append("user{}")'.format(i))
     exec('itrs["user{}"] = {}'.format(i, 1))
-    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 5), random.uniform(0.1, 0.2))'.format(i))
+    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 0.3), random.uniform(0.1, 0.2))'.format(i))
 
 #################
 #     数据载入   #
@@ -416,7 +416,7 @@ for itr in range(1, args.total_iterations + 1):
     tau_avg /= (idx_outer + 1)
     fl_time += aggregating_workers_time_max
 
-    if itr == 1 or itr % args.itr_test == 0:
+    if itr % args.itr_test == 0:
         print('itr: {}'.format(itr))
         test_loss, test_acc = test(model, test_loader, device)
         logs['itr'].extend(workers_list)
