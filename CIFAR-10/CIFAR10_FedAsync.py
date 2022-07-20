@@ -45,6 +45,9 @@ class Argument:
         self.cuda_use = True
         self.train_data_size = 50000
         self.test_data_size = 10000
+        self.time_maker_ai_min = 0.2
+        self.time_maker_ai_max = 0.8
+        self.time_maker_tau = 5
 
         self.staleness_func_hinge_param_a = 10
         self.staleness_func_hinge_param_b = 2
@@ -165,12 +168,16 @@ def staleness_func_poly(t):
 
 
 class TimeMaker:
-    def __init__(self, avg, delta):
-        self.avg = avg
-        self.delta = delta
+    def __init__(self, ai, taui, di):
+        self.ai = ai
+        self.mui = 1 / ai
+        self.taui = taui
+        self.di = di
 
     def make(self):
-        return self.avg + random.uniform(-self.delta * self.avg, self.delta * self.avg)
+        p = random.random()
+        t = math.log(1-p) * self.taui * self.di / (- self.mui) + self.ai * self.taui * self.di
+        return t
 
 
 #  下发全局模型
@@ -226,7 +233,8 @@ for i in range(1, args.user_num + 1):
     exec('workers.append(user{})'.format(i))
     exec('users.append("user{}")'.format(i))
     exec('itrs["user{}"] = {}'.format(i, 1))
-    exec('time_makers["user{}"] = TimeMaker(random.uniform(0.1, 0.3), random.uniform(0.1, 0.2))'.format(i))
+    exec('time_makers["user{}"] = TimeMaker(random.uniform(args.time_maker_ai_min, args.time_maker_ai_max), '
+         'args.time_maker_tau, args.batch_size)'.format(i))
 
 #################
 #     数据载入   #
